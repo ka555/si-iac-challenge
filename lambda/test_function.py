@@ -1,12 +1,27 @@
 import json
 import pytest
 import os
+import sys
 from unittest.mock import patch, MagicMock
 from moto import mock_s3
 import boto3
 
+# Add the current directory to Python path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 # Import the lambda function
-from list_s3_contents import lambda_handler, list_bucket_objects, create_response
+try:
+    from list_s3_contents import lambda_handler, list_bucket_objects, create_response
+except ImportError:
+    # Alternative import path for CI/CD
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("list_s3_contents",
+                                                  os.path.join(os.path.dirname(__file__), "list_s3_contents.py"))
+    list_s3_contents = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(list_s3_contents)
+    lambda_handler = list_s3_contents.lambda_handler
+    list_bucket_objects = list_s3_contents.list_bucket_objects
+    create_response = list_s3_contents.create_response
 
 
 class TestLambdaFunction:
@@ -144,43 +159,43 @@ class TestLambdaFunction:
             assert response['statusCode'] == 200
             mock_list.assert_called_once_with(self.test_bucket, '', 1000)
 
-    @patch('list_s3_contents.s3_client')
-    def test_lambda_handler_s3_access_denied(self, mock_s3):
+    def test_lambda_handler_s3_access_denied(self):
         """Test lambda when S3 access is denied"""
         from botocore.exceptions import ClientError
 
-        mock_s3.list_objects_v2.side_effect = ClientError(
-            {'Error': {'Code': 'AccessDenied', 'Message': 'Access Denied'}},
-            'ListObjectsV2'
-        )
+        with patch('list_s3_contents.s3_client') as mock_s3:
+            mock_s3.list_objects_v2.side_effect = ClientError(
+                {'Error': {'Code': 'AccessDenied', 'Message': 'Access Denied'}},
+                'ListObjectsV2'
+            )
 
-        event = {'queryStringParameters': None}
-        context = MagicMock()
+            event = {'queryStringParameters': None}
+            context = MagicMock()
 
-        response = lambda_handler(event, context)
+            response = lambda_handler(event, context)
 
-        assert response['statusCode'] == 403
-        body = json.loads(response['body'])
-        assert body['error'] == 'Access denied'
+            assert response['statusCode'] == 403
+            body = json.loads(response['body'])
+            assert body['error'] == 'Access denied'
 
-    @patch('list_s3_contents.s3_client')
-    def test_lambda_handler_bucket_not_found(self, mock_s3):
+    def test_lambda_handler_bucket_not_found(self):
         """Test lambda when bucket doesn't exist"""
         from botocore.exceptions import ClientError
 
-        mock_s3.list_objects_v2.side_effect = ClientError(
-            {'Error': {'Code': 'NoSuchBucket', 'Message': 'Bucket not found'}},
-            'ListObjectsV2'
-        )
+        with patch('list_s3_contents.s3_client') as mock_s3:
+            mock_s3.list_objects_v2.side_effect = ClientError(
+                {'Error': {'Code': 'NoSuchBucket', 'Message': 'Bucket not found'}},
+                'ListObjectsV2'
+            )
 
-        event = {'queryStringParameters': None}
-        context = MagicMock()
+            event = {'queryStringParameters': None}
+            context = MagicMock()
 
-        response = lambda_handler(event, context)
+            response = lambda_handler(event, context)
 
-        assert response['statusCode'] == 404
-        body = json.loads(response['body'])
-        assert body['error'] == 'Bucket not found'
+            assert response['statusCode'] == 404
+            body = json.loads(response['body'])
+            assert body['error'] == 'Bucket not found'
 
     def test_create_response(self):
         """Test response creation function"""
