@@ -99,24 +99,37 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.9.19
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.9.19'
 
       - name: Install dependencies
         run: |
-          pip install boto3 pytest moto
+          cd lambda
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify installations
+        run: |
+          cd lambda
+          python -c "import moto; print(f'Moto version: {moto.__version__}')"
+          python -c "import boto3; print(f'Boto3 version: {boto3.__version__}')"
+          python -c "import pytest; print(f'Pytest version: {pytest.__version__}')"
 
       - name: Run Lambda tests
         run: |
-          python3 -m pytest lambda/test_function.py -v
-        continue-on-error: true
+          cd lambda
+          export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+          python3 -m pytest test_function.py -v -s --tb=short
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          PYTHONPATH: ${{ github.workspace }}/lambda
 
   deploy-dev:
     name: "Deploy to Development"
     runs-on: ubuntu-latest
-    needs: [validate, security-scan]
+    needs: [validate, security-scan, test-lambda]
     if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'dev'
     environment: development
 
@@ -188,7 +201,7 @@ jobs:
   deploy-staging:
     name: "Deploy to Staging"
     runs-on: ubuntu-latest
-    needs: [validate, security-scan, deploy-dev]
+    needs: [validate, security-scan, test-lambda, deploy-dev]
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
     environment: staging
 
@@ -227,7 +240,7 @@ jobs:
   deploy-prod:
     name: "Deploy to Production"
     runs-on: ubuntu-latest
-    needs: [validate, security-scan, deploy-staging]
+    needs: [validate, security-scan, test-lambda, deploy-staging]
     if: github.ref == 'refs/heads/main' && github.event.inputs.environment == 'prod'
     environment: production
 
