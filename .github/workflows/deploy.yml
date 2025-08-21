@@ -1,0 +1,295 @@
+name: Deploy Serverless Infrastructure
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  TF_VERSION: "1.5.0"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  validate:
+    name: "Validate Infrastructure"
+    runs-on: ubuntu-latest
+    outputs:
+      tf-plan-exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ./terraform
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -input=false \
+            -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+            -var="log_level=INFO" \
+            -out=tfplan
+        working-directory: ./terraform
+        continue-on-error: true
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/tfplan
+
+  security-scan:
+    name: "Security Scan"
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: ./terraform
+          soft_fail: true
+
+  test-lambda:
+    name: "Test Lambda Function"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install boto3 pytest moto
+
+      - name: Run Lambda tests
+        run: |
+          python3 -m pytest lambda/test_function.py -v
+        continue-on-error: true
+
+  deploy-dev:
+    name: "Deploy to Development"
+    runs-on: ubuntu-latest
+    needs: [validate, security-scan]
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'dev'
+    environment: development
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        id: apply
+        run: |
+          terraform apply -auto-approve tfplan
+        working-directory: ./terraform
+
+      - name: Get deployment outputs
+        id: outputs
+        run: |
+          echo "api_url=$(terraform output -raw api_gateway_endpoint)" >> $GITHUB_OUTPUT
+          echo "lambda_name=$(terraform output -raw lambda_function_name)" >> $GITHUB_OUTPUT
+        working-directory: ./terraform
+
+      - name: Run smoke tests
+        id: smoke_test
+        run: |
+          API_URL="${{ steps.outputs.outputs.api_url }}"
+          sleep 30
+          
+          response=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL")
+          if [ "$response" = "200" ]; then
+            echo "API endpoint test passed"
+          else
+            echo "API endpoint test failed with status: $response"
+            exit 1
+          fi
+          
+          aws lambda invoke \
+            --function-name "${{ steps.outputs.outputs.lambda_name }}" \
+            --payload '{}' \
+            response.json
+          
+          if [ $? -eq 0 ]; then
+            echo "Lambda invocation test passed"
+          else
+            echo "Lambda invocation test failed"
+            exit 1
+          fi
+
+  deploy-staging:
+    name: "Deploy to Staging"
+    runs-on: ubuntu-latest
+    needs: [validate, security-scan, deploy-dev]
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    environment: staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -input=false \
+            -var="environment=staging" \
+            -var="log_level=WARNING" \
+            -out=staging-plan
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve staging-plan
+        working-directory: ./terraform
+
+  deploy-prod:
+    name: "Deploy to Production"
+    runs-on: ubuntu-latest
+    needs: [validate, security-scan, deploy-staging]
+    if: github.ref == 'refs/heads/main' && github.event.inputs.environment == 'prod'
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_PROD_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_PROD_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -input=false \
+            -var="environment=prod" \
+            -var="log_level=ERROR" \
+            -var="notification_email=${{ secrets.NOTIFICATION_EMAIL }}" \
+            -out=prod-plan
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        id: prod_apply
+        run: terraform apply -auto-approve prod-plan
+        working-directory: ./terraform
+
+      - name: Production health check
+        run: |
+          API_URL=$(terraform output -raw api_gateway_endpoint)
+          
+          for i in {1..5}; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL")
+            if [ "$response" = "200" ]; then
+              echo "Health check $i: passed"
+            else
+              echo "Health check $i: failed (status: $response)"
+              exit 1
+            fi
+            sleep 10
+          done
+        working-directory: ./terraform
+
+  cleanup:
+    name: "Cleanup Artifacts"
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, deploy-staging, deploy-prod]
+    if: always()
+
+    steps:
+      - name: Delete artifacts
+        uses: geekyeggo/delete-artifact@v4
+        with:
+          name: terraform-plan
+          failOnError: false

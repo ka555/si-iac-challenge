@@ -1,0 +1,105 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+terraform.tfplan
+terraform.tfplan.*
+*-plan-*
+*.plan
+
+# Local terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Lambda deployment packages
+*.zip
+lambda_function.zip
+
+# AWS
+.aws/
+aws-credentials
+response.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+
+# Archive files
+*.tar.gz
+*.rar# IntelliJ IDEA files
+.idea/
+*.iml
+
+
+# IntelliJ IDEA files
+.idea/
+*.iml
+*.iws
+*.ipr
