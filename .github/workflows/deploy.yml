@@ -205,7 +205,7 @@ jobs:
   deploy-staging:
     name: "Deploy to Staging"
     runs-on: ubuntu-latest
-    needs: [validate, security-scan, test-lambda, deploy-dev]
+    needs: [validate, security-scan, test-lambda]  # Removed deploy-dev dependency
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
     environment: staging
 
@@ -244,7 +244,7 @@ jobs:
   deploy-prod:
     name: "Deploy to Production"
     runs-on: ubuntu-latest
-    needs: [validate, security-scan, test-lambda, deploy-staging]
+    needs: [validate, security-scan, test-lambda]  # Removed deploy-staging dependency for manual prod deploys
     if: github.ref == 'refs/heads/main' && github.event.inputs.environment == 'prod'
     environment: production
 
